@@ -7,6 +7,49 @@ extern const char* password; // The password of the Wi-Fi network
 extern const char* mqttServer;
 extern const int mqttPort;
 
+enum power_state_e {
+  OFF_1   = 0,
+  ON_1    = 1,
+  ON_UV_1 = 2,
+  ON_2    = 3,
+  POWER_STATE_COUNT = 4
+};
+
+enum level_state_e {
+  LVL0 = 0,
+  LVL1 = 1,
+  LVL2 = 2,
+  LEVEL_STATE_COUNT = 3
+};
+
+enum power_state_pub_e {
+  OFF   = 0,
+  ON    = 1,
+  ON_UV = 2
+};
+
+power_state_pub_e power_state_internal_to_pub(power_state_e state) {
+  switch (state) {
+    case OFF_1:
+      return OFF;
+    case ON_1:
+    case ON_2:
+      return ON;
+    case ON_UV_1:
+      return ON_UV;
+    default:
+      return OFF;
+  }
+}
+
+power_state_e power_state = OFF_1;
+power_state_pub_e requested_power_state = OFF; 
+
+level_state_e level_state = LVL0;
+level_state_e requested_level_state = LVL0;
+
+boolean change_in_progress = false;
+
 #define ON_OFF_PIN 5
 #define LEVEL_PIN 4
 
@@ -25,16 +68,26 @@ void callback(char* topic, byte* payload, unsigned int length) {
     // we subscribe only one topic, so no need to check it
     if (length == 0) {
       Serial.println(PING);
-      publish_presence("pong");
+      publish_presence();
     }
     // if (strlen(PING) == length && memcmp(payload, length) == 0)
   } else if (strcmp(topic, TOPIC_AIR_FILTER_CMD) == 0) {
     Serial.print("cmd:");
-    Serial.println((char)payload[0]);
-    if (payload[0] == 'P') {
-      handleOnOff();
-    } else if (payload[0] == 'L') {
-      handleLevel();
+    Serial.print((char)payload[0]);
+    if (length == 2 && payload[0] == 'P') {
+      Serial.println((char)payload[1]);
+      int req_int = payload[1]-'0';
+      if (req_int >= OFF && req_int <= ON_UV) {
+        requested_power_state = (power_state_pub_e)req_int;
+        change_in_progress = true;
+      }
+    } else if (length == 2 && payload[0] == 'L') {
+      Serial.println((char)payload[1]);
+      int req_int = payload[1]-'0';
+      if (req_int >= LVL0 && req_int <= LVL2) {
+        requested_level_state = (level_state_e)req_int;
+        change_in_progress = true;
+      }
     }
   } else {
     Serial.print("Unknown topic");
@@ -52,7 +105,7 @@ void setup() {
   delay(10);
   Serial.println('\n');
 
-  my_name = "af_"+String(ESP.getChipId(), HEX)+":";
+  my_name = "af_"+String(ESP.getChipId(), HEX);
   Serial.print("My name is "); Serial.println(my_name);
 
   WiFi.begin(ssid, password);             // Connect to the network
@@ -79,8 +132,10 @@ void setup() {
   client.setCallback(callback);
 }
 
-void publish_presence(String m) {
-    String msg = my_name + m;  
+void publish_presence() {
+    String msg = my_name + ':';
+    msg += power_state_internal_to_pub(power_state);
+    msg += level_state;
     client.publish(TOPIC_PRESENCE, msg.c_str());
 }
 
@@ -88,13 +143,11 @@ void reconnect() {
   // Loop until we're reconnected
   while (!client.connected()) {
     Serial.print("Attempting MQTT connection...");
-    // Create a random client ID
-    String clientId = "af_" + WiFi.SSID();
     // Attempt to connect
-    if (client.connect(clientId.c_str())) {
+    if (client.connect(my_name.c_str())) {
       Serial.println("connected");
       // Once connected, publish an announcement...
-      publish_presence("connect");
+      publish_presence();
       // Subscribe interesting topics
       client.subscribe(TOPIC_PRESENCE_CMD);
       client.subscribe(TOPIC_AIR_FILTER_CMD);
@@ -113,16 +166,32 @@ void loop(void){
     reconnect();
   }
   client.loop();
+
+  // Press some buttons when needed
+  if (power_state_internal_to_pub(power_state) != requested_power_state) {
+    advancePowerState();
+  } else if (power_state != OFF_1 && level_state != requested_level_state) {
+    advanceLevelState();
+  } else if (change_in_progress) {
+    publish_presence();
+    change_in_progress = false;
+  }
 }
 
-void handleOnOff() {
-  digitalWrite(ON_OFF_PIN,1);      // Change the state of the LED
+void advancePowerState() {
+  Serial.println("Press P");
+  digitalWrite(ON_OFF_PIN,1);
   delay(50);
-  digitalWrite(ON_OFF_PIN,0);      // Change the state of the LED
+  digitalWrite(ON_OFF_PIN,0);
+  delay(200);
+  power_state = (power_state_e)((power_state+1) % POWER_STATE_COUNT);
 }
 
-void handleLevel() {
-  digitalWrite(LEVEL_PIN,1);      // Change the state of the LED
+void advanceLevelState() {
+  Serial.println("Press L");
+  digitalWrite(LEVEL_PIN,1);
   delay(50);
-  digitalWrite(LEVEL_PIN,0);      // Change the state of the LED
+  digitalWrite(LEVEL_PIN,0);
+  delay(200);
+  level_state = (level_state_e)((level_state+1) % LEVEL_STATE_COUNT);
 }
