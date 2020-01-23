@@ -8,10 +8,10 @@ extern const char* mqttServer;
 extern const int mqttPort;
 
 enum power_state_e {
-  OFF_1   = 0,
-  ON_1    = 1,
-  ON_UV_1 = 2,
-  ON_2    = 3,
+  OFF   = 0,
+  ON_1  = 1,
+  ON_UV = 2,
+  ON_2  = 3,
   POWER_STATE_COUNT = 4
 };
 
@@ -23,30 +23,36 @@ enum level_state_e {
 };
 
 enum power_state_pub_e {
-  OFF   = 0,
-  ON    = 1,
-  ON_UV = 2
+  P0 = 0,
+  P1 = 1,
+  P2 = 2,
+  P3 = 3
 };
 
-power_state_pub_e power_state_internal_to_pub(power_state_e state) {
-  switch (state) {
-    case OFF_1:
-      return OFF;
-    case ON_1:
-    case ON_2:
-      return ON;
-    case ON_UV_1:
-      return ON_UV;
-    default:
-      return OFF;
-  }
+enum uv_state_pub_e {
+  UV0 = 0,
+  UV1 = 1
+};
+
+boolean public_to_power(power_state_e power_int, power_state_pub_e power_pub, uv_state_pub_e uv_pub) {
+  if (power_pub == P0 && power_int == OFF) return true;
+  else if (power_pub >= P1 && uv_pub == UV0 && (power_int == ON_1 || power_int == ON_2)) return true;
+  else if (power_pub >= P1 && uv_pub == UV1 && power_int == ON_UV) return true;
+  return false;
 }
 
-power_state_e power_state = OFF_1;
-power_state_pub_e requested_power_state = OFF; 
+boolean public_to_level(level_state_e level, power_state_pub_e power_pub) {
+  if (power_pub == P0) return true; // when it's off level doesn't matter
+  else if ((power_pub == P1 && level == LVL0) || (power_pub == P2 && level == LVL1)
+        || (power_pub == P3 && level == LVL2)) return true;
+  return false;
+}
 
+power_state_pub_e requested_power_state = P0;
+uv_state_pub_e    requested_uv_state    = UV1; // by default let's use UV
+
+power_state_e power_state = OFF;
 level_state_e level_state = LVL0;
-level_state_e requested_level_state = LVL0;
 
 boolean change_in_progress = false;
 
@@ -77,15 +83,15 @@ void callback(char* topic, byte* payload, unsigned int length) {
     if (length == 2 && payload[0] == 'P') {
       Serial.println((char)payload[1]);
       int req_int = payload[1]-'0';
-      if (req_int >= OFF && req_int <= ON_UV) {
+      if (req_int >= P0 && req_int <= P3) {
         requested_power_state = (power_state_pub_e)req_int;
         change_in_progress = true;
       }
-    } else if (length == 2 && payload[0] == 'L') {
+    } else if (length == 2 && payload[0] == 'U') {
       Serial.println((char)payload[1]);
       int req_int = payload[1]-'0';
-      if (req_int >= LVL0 && req_int <= LVL2) {
-        requested_level_state = (level_state_e)req_int;
+      if (req_int >= UV0 && req_int <= UV1) {
+        requested_uv_state = (uv_state_pub_e)req_int;
         change_in_progress = true;
       }
     }
@@ -134,8 +140,8 @@ void setup() {
 
 void publish_presence() {
     String msg = my_name + ':';
-    msg += power_state_internal_to_pub(power_state);
-    msg += level_state;
+    msg += requested_power_state;
+    msg += requested_uv_state;
     client.publish(TOPIC_PRESENCE, msg.c_str());
 }
 
@@ -168,9 +174,9 @@ void loop(void){
   client.loop();
 
   // Press some buttons when needed
-  if (power_state_internal_to_pub(power_state) != requested_power_state) {
+  if (!public_to_power(power_state, requested_power_state, requested_uv_state)) {
     advancePowerState();
-  } else if (power_state != OFF_1 && level_state != requested_level_state) {
+  } else if (!public_to_level(level_state, requested_power_state)) {
     advanceLevelState();
   } else if (change_in_progress) {
     publish_presence();
