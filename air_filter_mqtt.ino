@@ -34,6 +34,11 @@ enum uv_state_pub_e {
   UV1 = 1
 };
 
+enum switch_state_e {
+  SW0 = 0,
+  SW1 = 1
+};
+
 boolean public_to_power(power_state_e power_int, power_state_pub_e power_pub, uv_state_pub_e uv_pub) {
   if (power_pub == P0 && power_int == OFF) return true;
   else if (power_pub >= P1 && uv_pub == UV0 && (power_int == ON_1 || power_int == ON_2)) return true;
@@ -50,14 +55,17 @@ boolean public_to_level(level_state_e level, power_state_pub_e power_pub) {
 
 power_state_pub_e requested_power_state = P0;
 uv_state_pub_e    requested_uv_state    = UV1; // by default let's use UV
+switch_state_e    requested_switch_state = SW0;
 
-power_state_e power_state = OFF;
-level_state_e level_state = LVL0;
+power_state_e  power_state = OFF;
+level_state_e  level_state = LVL0;
+switch_state_e switch_state = SW0;
 
 boolean change_in_progress = false;
 
 #define ON_OFF_PIN 5
 #define LEVEL_PIN 4
+#define SWITCH_PIN 13
 
 WiFiClient espClient;
 PubSubClient client(espClient);
@@ -94,6 +102,12 @@ void callback(char* topic, byte* payload, unsigned int length) {
         requested_uv_state = (uv_state_pub_e)req_int;
         change_in_progress = true;
       }
+    } else if (length == 2 && payload[0] == 'S') {
+      Serial.println((char)payload[1]);
+      int req_int = payload[1]-'0';
+      if (req_int >= SW0 && req_int <= SW1) {
+        requested_switch_state = (switch_state_e)req_int;
+      }
     }
   } else {
     Serial.print("Unknown topic");
@@ -104,8 +118,10 @@ void callback(char* topic, byte* payload, unsigned int length) {
 void setup() {
   pinMode(ON_OFF_PIN, OUTPUT);
   pinMode(LEVEL_PIN, OUTPUT);
+  pinMode(SWITCH_PIN, OUTPUT);
   digitalWrite(ON_OFF_PIN, 0);
   digitalWrite(LEVEL_PIN, 0);
+  digitalWrite(SWITCH_PIN, switch_state);
 
   Serial.begin(115200);         // Start the Serial communication to send messages to the computer
   delay(10);
@@ -142,6 +158,7 @@ void publish_presence() {
     String msg = my_name + ':';
     msg += requested_power_state;
     msg += requested_uv_state;
+    msg += switch_state;
     client.publish(TOPIC_PRESENCE, msg.c_str());
 }
 
@@ -181,6 +198,13 @@ void loop(void){
   } else if (change_in_progress) {
     publish_presence();
     change_in_progress = false;
+  }
+
+  // External switch
+  if (requested_switch_state != switch_state) {
+    digitalWrite(SWITCH_PIN, requested_switch_state);
+    switch_state = requested_switch_state;
+    publish_presence();
   }
 }
 
