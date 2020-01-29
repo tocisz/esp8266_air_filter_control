@@ -1,11 +1,12 @@
 #include <ESP8266WiFi.h>        // Include the Wi-Fi library
 #include <PubSubClient.h>
 #include <Esp.h>
+#include <DHTesp.h>
 
-extern const char* ssid; // The SSID (name) of the Wi-Fi network you want to connect to
+extern const char* ssid;     // The SSID (name) of the Wi-Fi network you want to connect to
 extern const char* password; // The password of the Wi-Fi network
 extern const char* mqttServer;
-extern const int mqttPort;
+extern const int   mqttPort;
 
 enum power_state_e {
   OFF   = 0,
@@ -62,17 +63,21 @@ level_state_e  level_state = LVL0;
 switch_state_e switch_state = SW0;
 
 boolean change_in_progress = false;
+boolean request_dht = false;
 
 #define ON_OFF_PIN 5
 #define LEVEL_PIN 4
 #define SWITCH_PIN 13
+#define DHT_PIN 12
 
 WiFiClient espClient;
 PubSubClient client(espClient);
+DHTesp dht;
 
-const char *TOPIC_PRESENCE = "presence";
-const char *TOPIC_PRESENCE_CMD = "presence_cmd";
-const char *TOPIC_AIR_FILTER_CMD = "af_cmd";
+const char *TOPIC_PRESENCE = "p/living/XXX"; // +id
+const char *TOPIC_PRESENCE_CMD = "preq";
+const char *TOPIC_AIR_FILTER_CMD = "c/living/XXX"; // +id
+const char *TOPIC_TEMP_HUMID = "s/living/t/XXX"; // +id
 const char *PING = "ping";
 
 String my_name;
@@ -84,7 +89,6 @@ void callback(char* topic, byte* payload, unsigned int length) {
       Serial.println(PING);
       publish_presence();
     }
-    // if (strlen(PING) == length && memcmp(payload, length) == 0)
   } else if (strcmp(topic, TOPIC_AIR_FILTER_CMD) == 0) {
     Serial.print("cmd:");
     Serial.print((char)payload[0]);
@@ -108,6 +112,9 @@ void callback(char* topic, byte* payload, unsigned int length) {
       if (req_int >= SW0 && req_int <= SW1) {
         requested_switch_state = (switch_state_e)req_int;
       }
+    } else if (length == 1 && payload[0] == 'D') {
+      Serial.println();
+      request_dht = true;
     }
   } else {
     Serial.print("Unknown topic");
@@ -152,14 +159,23 @@ void setup() {
 
   client.setServer(mqttServer, mqttPort);
   client.setCallback(callback);
+
+  // Initialize temperature sensor
+  dht.setup(DHT_PIN, DHTesp::DHT22);
 }
 
 void publish_presence() {
-    String msg = my_name + ':';
+    String msg;
     msg += requested_power_state;
     msg += requested_uv_state;
     msg += switch_state;
     client.publish(TOPIC_PRESENCE, msg.c_str());
+}
+
+void publish_temp_humid(float temp, float humid) {
+  String msg = String(temp,1) + ";" + String(humid,1);
+  Serial.println(msg);
+  client.publish(TOPIC_TEMP_HUMID, msg.c_str());
 }
 
 void reconnect() {
@@ -205,6 +221,12 @@ void loop(void){
     digitalWrite(SWITCH_PIN, requested_switch_state);
     switch_state = requested_switch_state;
     publish_presence();
+  }
+
+  // DHT
+  if (request_dht) {
+    publish_temp_humid(dht.getTemperature(), dht.getHumidity());
+    request_dht = false;
   }
 }
 
