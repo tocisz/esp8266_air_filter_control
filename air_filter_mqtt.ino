@@ -7,6 +7,8 @@ extern const char* ssid;     // The SSID (name) of the Wi-Fi network you want to
 extern const char* password; // The password of the Wi-Fi network
 extern const char* mqttServer;
 extern const int   mqttPort;
+extern const char* mqttUser;
+extern const char* mqttPassword;
 
 enum power_state_e {
   OFF   = 0,
@@ -54,6 +56,26 @@ boolean public_to_level(level_state_e level, power_state_pub_e power_pub) {
   return false;
 }
 
+power_state_pub_e internal_to_power(power_state_e  power_state, level_state_e  level_state) {
+  if (power_state == OFF) return P0;
+  else switch (level_state) {
+    case LVL0: return P1;
+    case LVL1: return P2;
+    case LVL2: return P3;
+  }
+  return P0;
+}
+
+uv_state_pub_e internal_to_uv(power_state_e power_state) {
+  switch (power_state) {
+    case ON_1:
+    case ON_2: return UV0;
+    case OFF: // default is UV = ON
+    case ON_UV: return UV1;
+  }
+  return UV0;
+}
+
 power_state_pub_e requested_power_state = P0;
 uv_state_pub_e    requested_uv_state    = UV1; // by default let's use UV
 switch_state_e    requested_switch_state = SW0;
@@ -75,10 +97,11 @@ PubSubClient client(espClient);
 DHTesp dht;
 
 const char *TOPIC_PRESENCE = "p/living/XXX"; // +id
+const char *TOPIC_PRESENCE_INTERNAL = "p/living/XXX/i"; // +id
+const char *TOPIC_PRESENCE_ONLINE = "p/living/XXX/online"; // +id
 const char *TOPIC_PRESENCE_CMD = "preq";
 const char *TOPIC_AIR_FILTER_CMD = "c/living/XXX"; // +id
 const char *TOPIC_TEMP_HUMID = "s/living/t/XXX"; // +id
-const char *PING = "ping";
 
 String my_name;
 
@@ -86,8 +109,24 @@ void callback(char* topic, byte* payload, unsigned int length) {
   if (strcmp(topic, TOPIC_PRESENCE_CMD) == 0) {
     // we subscribe only one topic, so no need to check it
     if (length == 0) {
-      Serial.println(PING);
+      Serial.println("preq");
       publish_presence();
+    }
+  } else if (strcmp(topic, TOPIC_PRESENCE_INTERNAL) == 0) {
+    if (length == 3) {
+      Serial.println("init after reset");
+      Serial.print((char)payload[0]);
+      Serial.print((char)payload[1]);
+      Serial.println((char)payload[2]);
+      power_state  = (power_state_e) (payload[0]-'0');
+      level_state  = (level_state_e) (payload[1]-'0');
+      switch_state = (switch_state_e)(payload[2]-'0');
+      // after reset assume requested state is as it is
+      requested_power_state = internal_to_power(power_state, level_state);
+      requested_uv_state = internal_to_uv(power_state);
+      requested_switch_state = switch_state;
+      // we are done, so unsubscribe
+      client.unsubscribe(TOPIC_PRESENCE_INTERNAL);
     }
   } else if (strcmp(topic, TOPIC_AIR_FILTER_CMD) == 0) {
     Serial.print("cmd:");
@@ -165,11 +204,21 @@ void setup() {
 }
 
 void publish_presence() {
-    String msg;
-    msg += requested_power_state;
-    msg += requested_uv_state;
-    msg += switch_state;
-    client.publish(TOPIC_PRESENCE, msg.c_str());
+    client.beginPublish(TOPIC_PRESENCE, 3, false);
+    client.write('0'+requested_power_state);
+    client.write('0'+requested_uv_state);
+    client.write('0'+switch_state);
+    client.endPublish();
+
+    client.beginPublish(TOPIC_PRESENCE_INTERNAL, 3, true);
+    client.write('0'+power_state);
+    client.write('0'+level_state);
+    client.write('0'+switch_state);
+    client.endPublish();
+}
+
+void publish_online() {
+  client.publish(TOPIC_PRESENCE_ONLINE, "1", true); // online state is retained
 }
 
 void publish_temp_humid(float temp, float humid) {
@@ -183,11 +232,13 @@ void reconnect() {
   while (!client.connected()) {
     Serial.print("Attempting MQTT connection...");
     // Attempt to connect
-    if (client.connect(my_name.c_str())) {
+    if (client.connect(my_name.c_str(), mqttUser, mqttPassword,
+        TOPIC_PRESENCE_ONLINE, 1, true, "0")) { // last will is to say that it's offline now
       Serial.println("connected");
       // Once connected, publish an announcement...
-      publish_presence();
+      publish_online();
       // Subscribe interesting topics
+      client.subscribe(TOPIC_PRESENCE_INTERNAL, 1);
       client.subscribe(TOPIC_PRESENCE_CMD);
       client.subscribe(TOPIC_AIR_FILTER_CMD);
     } else {
