@@ -3,12 +3,23 @@
 #include <Esp.h>
 #include <DHTesp.h>
 
+#include "topic_provider.h"
+
+// secrets.ino
 extern const char* ssid;     // The SSID (name) of the Wi-Fi network you want to connect to
 extern const char* password; // The password of the Wi-Fi network
 extern const char* mqttServer;
 extern const int   mqttPort;
 extern const char* mqttUser;
 extern const char* mqttPassword;
+
+// config.ino
+extern const int ON_OFF_PIN;
+extern const int LEVEL_PIN;
+extern const int SWITCH_PIN;
+extern const int DHT_PIN;
+extern const DHTesp::DHT_MODEL_t DHT_MODEL;
+extern const char* AREA;
 
 enum power_state_e {
   OFF   = 0,
@@ -52,17 +63,17 @@ boolean public_to_power(power_state_e power_int, power_state_pub_e power_pub, uv
 boolean public_to_level(level_state_e level, power_state_pub_e power_pub) {
   if (power_pub == P0) return true; // when it's off level doesn't matter
   else if ((power_pub == P1 && level == LVL0) || (power_pub == P2 && level == LVL1)
-        || (power_pub == P3 && level == LVL2)) return true;
+           || (power_pub == P3 && level == LVL2)) return true;
   return false;
 }
 
 power_state_pub_e internal_to_power(power_state_e  power_state, level_state_e  level_state) {
   if (power_state == OFF) return P0;
   else switch (level_state) {
-    case LVL0: return P1;
-    case LVL1: return P2;
-    case LVL2: return P3;
-  }
+      case LVL0: return P1;
+      case LVL1: return P2;
+      case LVL2: return P3;
+    }
   return P0;
 }
 
@@ -87,67 +98,55 @@ switch_state_e switch_state = SW0;
 boolean change_in_progress = false;
 boolean request_dht = false;
 
-#define ON_OFF_PIN 5
-#define LEVEL_PIN 4
-#define SWITCH_PIN 13
-#define DHT_PIN 12
-
 WiFiClient espClient;
 PubSubClient client(espClient);
 DHTesp dht;
 
-const char *TOPIC_PRESENCE = "p/living/XXX"; // +id
-const char *TOPIC_PRESENCE_INTERNAL = "p/living/XXX/i"; // +id
-const char *TOPIC_PRESENCE_ONLINE = "p/living/XXX/online"; // +id
-const char *TOPIC_PRESENCE_CMD = "preq";
-const char *TOPIC_AIR_FILTER_CMD = "c/living/XXX"; // +id
-const char *TOPIC_TEMP_HUMID = "s/living/t/XXX"; // +id
-
-String my_name;
+TopicProvider topics(AREA);
 
 void callback(char* topic, byte* payload, unsigned int length) {
-  if (strcmp(topic, TOPIC_PRESENCE_CMD) == 0) {
+  if (strcmp(topic, topics.presence_cmd()) == 0) {
     // we subscribe only one topic, so no need to check it
     if (length == 0) {
       Serial.println("preq");
       publish_presence();
     }
-  } else if (strcmp(topic, TOPIC_PRESENCE_INTERNAL) == 0) {
+  } else if (strcmp(topic, topics.presence_internal()) == 0) {
     if (length == 3) {
       Serial.println("init after reset");
       Serial.print((char)payload[0]);
       Serial.print((char)payload[1]);
       Serial.println((char)payload[2]);
-      power_state  = (power_state_e) (payload[0]-'0');
-      level_state  = (level_state_e) (payload[1]-'0');
-      switch_state = (switch_state_e)(payload[2]-'0');
+      power_state  = (power_state_e) (payload[0] - '0');
+      level_state  = (level_state_e) (payload[1] - '0');
+      switch_state = (switch_state_e)(payload[2] - '0');
       // after reset assume requested state is as it is
       requested_power_state = internal_to_power(power_state, level_state);
       requested_uv_state = internal_to_uv(power_state);
       requested_switch_state = switch_state;
       // we are done, so unsubscribe
-      client.unsubscribe(TOPIC_PRESENCE_INTERNAL);
+      client.unsubscribe(topics.presence_internal());
     }
-  } else if (strcmp(topic, TOPIC_AIR_FILTER_CMD) == 0) {
+  } else if (strcmp(topic, topics.cmd()) == 0) {
     Serial.print("cmd:");
     Serial.print((char)payload[0]);
     if (length == 2 && payload[0] == 'P') {
       Serial.println((char)payload[1]);
-      int req_int = payload[1]-'0';
+      int req_int = payload[1] - '0';
       if (req_int >= P0 && req_int <= P3) {
         requested_power_state = (power_state_pub_e)req_int;
         change_in_progress = true;
       }
     } else if (length == 2 && payload[0] == 'U') {
       Serial.println((char)payload[1]);
-      int req_int = payload[1]-'0';
+      int req_int = payload[1] - '0';
       if (req_int >= UV0 && req_int <= UV1) {
         requested_uv_state = (uv_state_pub_e)req_int;
         change_in_progress = true;
       }
     } else if (length == 2 && payload[0] == 'S') {
       Serial.println((char)payload[1]);
-      int req_int = payload[1]-'0';
+      int req_int = payload[1] - '0';
       if (req_int >= SW0 && req_int <= SW1) {
         requested_switch_state = (switch_state_e)req_int;
       }
@@ -173,14 +172,11 @@ void setup() {
   delay(10);
   Serial.println('\n');
 
-  my_name = "af_"+String(ESP.getChipId(), HEX);
+  String my_name = "af_" + String(ESP.getChipId(), HEX);
+  topics.set_id(my_name.c_str());
   Serial.print("My name is "); Serial.println(my_name);
 
   WiFi.begin(ssid, password);             // Connect to the network
-  IPAddress ip(192,168,0,66);   
-  IPAddress gateway(192,168,0,1);   
-  IPAddress subnet(255,255,255,0);   
-  WiFi.config(ip, gateway, subnet);
   Serial.print("Connecting to ");
   Serial.print(ssid); Serial.println(" ...");
 
@@ -200,31 +196,31 @@ void setup() {
   client.setCallback(callback);
 
   // Initialize temperature sensor
-  dht.setup(DHT_PIN, DHTesp::DHT22);
+  dht.setup(DHT_PIN, DHT_MODEL);
 }
 
 void publish_presence() {
-    client.beginPublish(TOPIC_PRESENCE, 3, false);
-    client.write('0'+requested_power_state);
-    client.write('0'+requested_uv_state);
-    client.write('0'+switch_state);
-    client.endPublish();
+  client.beginPublish(topics.presence(), 3, false);
+  client.write('0' + requested_power_state);
+  client.write('0' + requested_uv_state);
+  client.write('0' + switch_state);
+  client.endPublish();
 
-    client.beginPublish(TOPIC_PRESENCE_INTERNAL, 3, true);
-    client.write('0'+power_state);
-    client.write('0'+level_state);
-    client.write('0'+switch_state);
-    client.endPublish();
+  client.beginPublish(topics.presence_internal(), 3, true);
+  client.write('0' + power_state);
+  client.write('0' + level_state);
+  client.write('0' + switch_state);
+  client.endPublish();
 }
 
 void publish_online() {
-  client.publish(TOPIC_PRESENCE_ONLINE, "1", true); // online state is retained
+  client.publish(topics.presence_online(), "1", true); // online state is retained
 }
 
 void publish_temp_humid(float temp, float humid) {
-  String msg = String(temp,1) + ";" + String(humid,1);
+  String msg = String(temp, 1) + ";" + String(humid, 1);
   Serial.println(msg);
-  client.publish(TOPIC_TEMP_HUMID, msg.c_str());
+  client.publish(topics.sensor_ht(), msg.c_str());
 }
 
 void reconnect() {
@@ -232,15 +228,15 @@ void reconnect() {
   while (!client.connected()) {
     Serial.print("Attempting MQTT connection...");
     // Attempt to connect
-    if (client.connect(my_name.c_str(), mqttUser, mqttPassword,
-        TOPIC_PRESENCE_ONLINE, 1, true, "0")) { // last will is to say that it's offline now
+    if (client.connect(topics.get_id(), mqttUser, mqttPassword,
+                       topics.presence_online(), 1, true, "0")) { // last will is to say that it's offline now
       Serial.println("connected");
       // Once connected, publish an announcement...
       publish_online();
       // Subscribe interesting topics
-      client.subscribe(TOPIC_PRESENCE_INTERNAL, 1);
-      client.subscribe(TOPIC_PRESENCE_CMD);
-      client.subscribe(TOPIC_AIR_FILTER_CMD);
+      client.subscribe(topics.presence_internal(), 1);
+      client.subscribe(topics.presence_cmd());
+      client.subscribe(topics.cmd());
     } else {
       Serial.print("failed, rc=");
       Serial.print(client.state());
@@ -251,7 +247,7 @@ void reconnect() {
   }
 }
 
-void loop(void){
+void loop(void) {
   while (!client.connected()) {
     reconnect();
   }
@@ -283,18 +279,18 @@ void loop(void){
 
 void advancePowerState() {
   Serial.println("Press P");
-  digitalWrite(ON_OFF_PIN,1);
+  digitalWrite(ON_OFF_PIN, 1);
   delay(50);
-  digitalWrite(ON_OFF_PIN,0);
+  digitalWrite(ON_OFF_PIN, 0);
   delay(200);
-  power_state = (power_state_e)((power_state+1) % POWER_STATE_COUNT);
+  power_state = (power_state_e)((power_state + 1) % POWER_STATE_COUNT);
 }
 
 void advanceLevelState() {
   Serial.println("Press L");
-  digitalWrite(LEVEL_PIN,1);
+  digitalWrite(LEVEL_PIN, 1);
   delay(50);
-  digitalWrite(LEVEL_PIN,0);
+  digitalWrite(LEVEL_PIN, 0);
   delay(200);
-  level_state = (level_state_e)((level_state+1) % LEVEL_STATE_COUNT);
+  level_state = (level_state_e)((level_state + 1) % LEVEL_STATE_COUNT);
 }
