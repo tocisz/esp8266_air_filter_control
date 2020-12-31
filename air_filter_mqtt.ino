@@ -106,14 +106,15 @@ DHTesp dht;
 TopicProvider topics(AREA);
 
 Ticker flipper;
-void flip() {
-  static int count = 0;
-  if (count%10 == 0) {
-    digitalWrite(LED_BUILTIN, false);
-  } else if (count%10 == 1) {
-    digitalWrite(LED_BUILTIN, true);
-  }
-  ++count;
+
+void led_on() {
+  digitalWrite(LED_BUILTIN, false);
+  flipper.once_ms(100, led_off);
+}
+
+void led_off() {
+  digitalWrite(LED_BUILTIN, true);
+  flipper.once_ms(900, led_on);
 }
 
 void callback(char* topic, byte* payload, unsigned int length) {
@@ -177,7 +178,7 @@ void setup() {
   pinMode(LEVEL_PIN, OUTPUT);
   pinMode(SWITCH_PIN, OUTPUT);
   pinMode(LED_BUILTIN, OUTPUT);
-  flipper.attach(0.1, flip);
+  led_on();
 
   digitalWrite(ON_OFF_PIN, 0);
   digitalWrite(LEVEL_PIN, 0);
@@ -191,7 +192,8 @@ void setup() {
   topics.set_id(my_name.c_str());
   Serial.print("My name is "); Serial.println(my_name);
 
-  WiFi.begin(ssid, password);             // Connect to the network
+  WiFi.softAPdisconnect(true); // no AP
+  WiFi.begin(ssid, password);  // Connect to the network
   Serial.print("Connecting to ");
   Serial.print(ssid); Serial.println(" ...");
 
