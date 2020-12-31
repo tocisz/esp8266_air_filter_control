@@ -2,6 +2,7 @@
 #include <PubSubClient.h>
 #include <Esp.h>
 #include <DHTesp.h>
+#include <Ticker.h>
 
 #include "topic_provider.h"
 
@@ -104,6 +105,17 @@ DHTesp dht;
 
 TopicProvider topics(AREA);
 
+Ticker flipper;
+void flip() {
+  static int count = 0;
+  if (count%10 == 0) {
+    digitalWrite(LED_BUILTIN, false);
+  } else if (count%10 == 1) {
+    digitalWrite(LED_BUILTIN, true);
+  }
+  ++count;
+}
+
 void callback(char* topic, byte* payload, unsigned int length) {
   if (strcmp(topic, topics.presence_cmd()) == 0) {
     // we subscribe only one topic, so no need to check it
@@ -119,11 +131,11 @@ void callback(char* topic, byte* payload, unsigned int length) {
       Serial.println((char)payload[2]);
       power_state  = (power_state_e) (payload[0] - '0');
       level_state  = (level_state_e) (payload[1] - '0');
-      switch_state = (switch_state_e)(payload[2] - '0');
+      requested_switch_state = (switch_state_e)(payload[2] - '0'); // switch won't hold state
       // after reset assume requested state is as it is
       requested_power_state = internal_to_power(power_state, level_state);
       requested_uv_state = internal_to_uv(power_state);
-      requested_switch_state = switch_state;
+      switch_state = (switch_state_e)(1-requested_switch_state); // force update by setting current state to different than requested
       // we are done, so unsubscribe
       client.unsubscribe(topics.presence_internal());
     }
@@ -164,6 +176,9 @@ void setup() {
   pinMode(ON_OFF_PIN, OUTPUT);
   pinMode(LEVEL_PIN, OUTPUT);
   pinMode(SWITCH_PIN, OUTPUT);
+  pinMode(LED_BUILTIN, OUTPUT);
+  flipper.attach(0.1, flip);
+
   digitalWrite(ON_OFF_PIN, 0);
   digitalWrite(LEVEL_PIN, 0);
   digitalWrite(SWITCH_PIN, switch_state);
